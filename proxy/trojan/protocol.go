@@ -3,10 +3,14 @@ package trojan
 import (
 	"encoding/binary"
 	"io"
+	"syscall"
 
 	"v2ray.com/core/common/buf"
+	"v2ray.com/core/common/errors"
 	"v2ray.com/core/common/net"
 	"v2ray.com/core/common/protocol"
+	"v2ray.com/core/common/signal"
+	"v2ray.com/core/transport/internet/xtls"
 )
 
 var (
@@ -297,4 +301,29 @@ func (r *PacketReader) ReadMultiBufferWithMetadata() (*PacketPayload, error) {
 	}
 
 	return &PacketPayload{Target: dest, Buffer: mb}, nil
+}
+
+func copyV(reader buf.Reader, writer buf.Writer, timer signal.ActivityUpdater, conn *xtls.Conn, rawConn syscall.RawConn) error {
+	err := func() error {
+		for {
+			if conn.DirectIn {
+				conn.DirectIn = false
+				reader = buf.NewReadVReader(conn.Connection, rawConn)
+			}
+			buffer, err := reader.ReadMultiBuffer()
+			if !buffer.IsEmpty() {
+				timer.Update()
+				if werr := writer.WriteMultiBuffer(buffer); werr != nil {
+					return werr
+				}
+			}
+			if err != nil {
+				return err
+			}
+		}
+	}()
+	if err != nil && errors.Cause(err) != io.EOF {
+		return err
+	}
+	return nil
 }

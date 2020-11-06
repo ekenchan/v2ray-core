@@ -4,6 +4,7 @@ package trojan
 
 import (
 	"context"
+	"syscall"
 	"time"
 
 	"v2ray.com/core"
@@ -89,7 +90,9 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 		iConn = statConn.Connection
 	}
 
+	var rawConn syscall.RawConn
 	connWriter := &ConnWriter{}
+
 	allowUDP443 := false
 	switch account.Flow {
 	case XRO + "-udp443", XRD + "-udp443":
@@ -110,6 +113,9 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 				connWriter.Flow = account.Flow
 				if account.Flow == XRD {
 					xtlsConn.DirectMode = true
+					if sc, ok := xtlsConn.Connection.(syscall.Conn); ok {
+						rawConn, _ = sc.SyscallConn()
+					}
 				}
 			} else {
 				return newError(`failed to use ` + account.Flow + `, maybe "security" is not "xtls"`).AtWarning()
@@ -162,14 +168,16 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 	getResponse := func() error {
 		defer timer.SetTimeout(sessionPolicy.Timeouts.UplinkOnly)
 
-		var reader buf.Reader
 		if network == net.Network_UDP {
-			reader = &PacketReader{
-				Reader: conn,
-			}
-		} else {
-			reader = buf.NewReader(conn)
+			return buf.Copy(&PacketReader{Reader: conn}, link.Writer, buf.UpdateActivity(timer))
+
 		}
+
+		reader := buf.NewReader(conn)
+		if rawConn != nil {
+			return copyV(reader, link.Writer, timer, iConn.(*xtls.Conn), rawConn)
+		}
+
 		return buf.Copy(reader, link.Writer, buf.UpdateActivity(timer))
 	}
 
